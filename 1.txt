@@ -1,0 +1,47 @@
+1. One-to-One RNN — Word Sentiment Classification
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+# Read CSV
+df = pd.read_csv("sentiment.csv")
+
+words = df["word"].tolist()
+labels = torch.tensor(df["label"].tolist())
+
+vocab = {w: i for i, w in enumerate(set(words))}
+X = torch.tensor([[vocab[w]] for w in words])
+
+# Model
+class RNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.rnn = nn.RNN(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, 2)
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, _ = self.rnn(x)
+        return self.fc(out[:, -1, :])
+
+model = RNN()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(200):
+    pred = model(X)
+    loss = criterion(pred, labels)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+word = "excellent"
+x = torch.tensor([[vocab[word]]])
+
+print("Predicted label:", model(x).argmax(1).item())
+
