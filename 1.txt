@@ -1,4 +1,4 @@
-1. One-to-One RNN — Word Sentiment Classification
+# 1. One-to-One RNN — Word Sentiment Classification
 
 import torch
 import torch.nn as nn
@@ -44,4 +44,898 @@ word = "excellent"
 x = torch.tensor([[vocab[word]]])
 
 print("Predicted label:", model(x).argmax(1).item())
+
+# 2  Many-to-One RNN — Sentence Sentiment Analysis
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("sentiment.csv")
+
+sentences = df["sentence"].tolist()
+labels = torch.tensor(df["label"].tolist())
+
+# Build vocabulary
+tokens = [s.lower().split() for s in sentences]
+vocab = {"<PAD>": 0}
+
+for sentence in tokens:
+    for word in sentence:
+        if word not in vocab:
+            vocab[word] = len(vocab)
+
+# Convert sentences to equal-length sequences
+max_len = max(len(s) for s in tokens)
+
+X = torch.tensor([
+    [vocab[w] for w in s] + [0] * (max_len - len(s))
+    for s in tokens
+])
+
+# Model
+class RNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8, padding_idx=0)
+        self.rnn = nn.RNN(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, 2)
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, _ = self.rnn(x)
+        return self.fc(out[:, -1, :])
+
+model = RNN()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X)
+    loss = criterion(pred, labels)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+sentence = "i love this movie".split()
+sentence += ["<PAD>"] * (max_len - len(sentence))
+
+x = torch.tensor([[
+    vocab.get(w, 0) for w in sentence
+]])
+
+pred = model(x).argmax(1).item()
+print("Sentiment:", "Positive" if pred == 1 else "Negative")
+
+# 3. Many-to-Many RNN — POS Tagging
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("pos.csv")
+
+sentences = [s.lower().split() for s in df["sentence"]]
+tag_sequences = [s.split() for s in df["tags"]]
+
+# Build vocabularies
+vocab = {"<PAD>": 0}
+tag_vocab = {}
+
+for sentence in sentences:
+    for word in sentence:
+        if word not in vocab:
+            vocab[word] = len(vocab)
+
+for tags in tag_sequences:
+    for tag in tags:
+        if tag not in tag_vocab:
+            tag_vocab[tag] = len(tag_vocab)
+
+# Convert to tensors
+X = torch.tensor([[vocab[w] for w in s] for s in sentences])
+Y = torch.tensor([[tag_vocab[t] for t in s] for s in tag_sequences])
+
+# Model
+class RNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.rnn = nn.RNN(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, len(tag_vocab))
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, _ = self.rnn(x)
+        return self.fc(out)
+
+model = RNN()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X)
+    loss = criterion(pred.reshape(-1, len(tag_vocab)), Y.reshape(-1))
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+sentence = "the cat eats fish".split()
+x = torch.tensor([[vocab[w] for w in sentence]])
+
+pred = model(x).argmax(dim=2)[0]
+
+id_to_tag = {v: k for k, v in tag_vocab.items()}
+
+for word, tag in zip(sentence, pred.tolist()):
+    print(word, "->", id_to_tag[tag])
+
+# 4. One-to-Many RNN — Sequence Generation
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("sequence.csv")
+
+sequences = [s.split() for s in df["sequence"]]
+starts = df["start"].tolist()
+
+# Build vocabulary
+all_words = set(starts)
+for seq in sequences:
+    all_words.update(seq)
+
+vocab = {w: i for i, w in enumerate(sorted(all_words))}
+id_to_word = {i: w for w, i in vocab.items()}
+
+# Prepare decoder inputs and targets
+X = torch.tensor([[vocab[s]] for s in starts])
+
+decoder_input = torch.tensor([
+    [vocab["START"]] + [vocab[w] for w in seq[:-1]]
+    for seq in sequences
+])
+
+Y = torch.tensor([
+    [vocab[w] for w in seq]
+    for seq in sequences
+])
+
+# Model
+class RNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.encoder = nn.RNN(8, 16, batch_first=True)
+        self.decoder = nn.RNN(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, len(vocab))
+
+    def forward(self, x, dec_in):
+        _, hidden = self.encoder(self.emb(x))
+        out, _ = self.decoder(self.emb(dec_in), hidden)
+        return self.fc(out)
+
+model = RNN()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X, decoder_input)
+    loss = criterion(pred.reshape(-1, len(vocab)), Y.reshape(-1))
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Generation
+model.eval()
+x = torch.tensor([[vocab["START"]]])
+
+with torch.no_grad():
+    _, hidden = model.encoder(model.emb(x))
+    current = x
+    generated = []
+
+    for _ in range(10):
+        out, hidden = model.decoder(model.emb(current), hidden)
+        next_id = model.fc(out[:, -1, :]).argmax(1).item()
+        word = id_to_word[next_id]
+
+        if word == "END":
+            break
+
+        generated.append(word)
+        current = torch.tensor([[next_id]])
+
+print("Generated sequence:", " ".join(generated))
+
+"""
+LSTM
+"""
+
+# 1. One-to-One LSTM — Word Sentiment Classification
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+# Read CSV
+df = pd.read_csv("sentiment.csv")
+
+words = df["word"].tolist()
+Y = torch.tensor(df["label"].tolist())
+
+# Build vocabulary
+vocab = {w: i for i, w in enumerate(words)}
+X = torch.tensor([[vocab[w]] for w in words])
+
+
+# LSTM model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.lstm = nn.LSTM(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, 2)
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, (hidden, cell) = self.lstm(x)
+        return self.fc(out[:, -1, :])
+
+
+model = LSTMModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(200):
+    pred = model(X)
+    loss = criterion(pred, Y)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+word = "excellent"
+x = torch.tensor([[vocab[word]]])
+
+pred = model(x).argmax(dim=1).item()
+print("Sentiment:", "Positive" if pred == 1 else "Negative")
+
+# 2. Many-to-One LSTM — Sentence Sentiment Analysis
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("sentiment.csv")
+
+sentences = [s.lower().split() for s in df["sentence"]]
+Y = torch.tensor(df["label"].tolist())
+
+# Build vocabulary
+vocab = {"<PAD>": 0}
+
+for sentence in sentences:
+    for word in sentence:
+        if word not in vocab:
+            vocab[word] = len(vocab)
+
+# Convert sentences to word IDs
+max_len = max(len(s) for s in sentences)
+
+X = torch.tensor([
+    [vocab[w] for w in s] + [0] * (max_len - len(s))
+    for s in sentences
+])
+
+
+# LSTM model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8, padding_idx=0)
+        self.lstm = nn.LSTM(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, 2)
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, (hidden, cell) = self.lstm(x)
+        return self.fc(out[:, -1, :])
+
+
+model = LSTMModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X)
+    loss = criterion(pred, Y)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+sentence = "i love this movie".split()
+sentence += ["<PAD>"] * (max_len - len(sentence))
+
+x = torch.tensor([[vocab.get(w, 0) for w in sentence]])
+
+pred = model(x).argmax(dim=1).item()
+print("Sentiment:", "Positive" if pred == 1 else "Negative")
+
+# 3. Many-to-Many LSTM — POS Tagging
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("pos.csv")
+
+sentences = [s.lower().split() for s in df["sentence"]]
+tag_sequences = [s.split() for s in df["tags"]]
+
+# Build word vocabulary
+vocab = {"<PAD>": 0}
+
+for sentence in sentences:
+    for word in sentence:
+        if word not in vocab:
+            vocab[word] = len(vocab)
+
+# Build tag vocabulary
+tag_vocab = {}
+
+for tags in tag_sequences:
+    for tag in tags:
+        if tag not in tag_vocab:
+            tag_vocab[tag] = len(tag_vocab)
+
+# Convert to tensors
+X = torch.tensor([[vocab[w] for w in s] for s in sentences])
+Y = torch.tensor([[tag_vocab[t] for t in s] for s in tag_sequences])
+
+
+# LSTM model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.lstm = nn.LSTM(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, len(tag_vocab))
+
+    def forward(self, x):
+        x = self.emb(x)
+        out, (hidden, cell) = self.lstm(x)
+        return self.fc(out)
+
+
+model = LSTMModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X)
+
+    loss = criterion(
+        pred.reshape(-1, len(tag_vocab)),
+        Y.reshape(-1)
+    )
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Prediction
+sentence = "the cat eats fish".split()
+x = torch.tensor([[vocab[w] for w in sentence]])
+
+pred = model(x).argmax(dim=2)[0]
+
+id_to_tag = {v: k for k, v in tag_vocab.items()}
+
+for word, tag_id in zip(sentence, pred.tolist()):
+    print(word, "->", id_to_tag[tag_id])
+
+# 4. One-to-Many LSTM — Sequence Generation
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+df = pd.read_csv("sequence.csv")
+
+sequences = [s.split() for s in df["sequence"]]
+starts = df["start"].tolist()
+
+# Build vocabulary
+all_words = set(starts)
+
+for seq in sequences:
+    all_words.update(seq)
+
+vocab = {w: i for i, w in enumerate(sorted(all_words))}
+id_to_word = {i: w for w, i in vocab.items()}
+
+# Encoder input
+X = torch.tensor([[vocab[s]] for s in starts])
+
+# Decoder inputs and targets
+decoder_input = torch.tensor([
+    [vocab["START"]] + [vocab[w] for w in seq[:-1]]
+    for seq in sequences
+])
+
+Y = torch.tensor([
+    [vocab[w] for w in seq]
+    for seq in sequences
+])
+
+
+# LSTM encoder-decoder
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(len(vocab), 8)
+        self.encoder = nn.LSTM(8, 16, batch_first=True)
+        self.decoder = nn.LSTM(8, 16, batch_first=True)
+        self.fc = nn.Linear(16, len(vocab))
+
+    def forward(self, x, dec_in):
+        _, (hidden, cell) = self.encoder(self.emb(x))
+        out, _ = self.decoder(self.emb(dec_in), (hidden, cell))
+        return self.fc(out)
+
+
+model = LSTMModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+# Training
+for epoch in range(300):
+    pred = model(X, decoder_input)
+
+    loss = criterion(
+        pred.reshape(-1, len(vocab)),
+        Y.reshape(-1)
+    )
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Generate sequence
+model.eval()
+
+x = torch.tensor([[vocab["START"]]])
+generated = []
+
+with torch.no_grad():
+    _, (hidden, cell) = model.encoder(model.emb(x))
+    current = x
+
+    for _ in range(10):
+        out, (hidden, cell) = model.decoder(
+            model.emb(current), (hidden, cell)
+        )
+
+        next_id = self_id = model.fc(out[:, -1, :]).argmax(1).item()
+        word = id_to_word[next_id]
+
+        if word == "END":
+            break
+
+        generated.append(word)
+        current = torch.tensor([[next_id]])
+
+print("Generated:", " ".join(generated))
+
+"""
+GAN
+"""
+
+# Minimal GAN Using CSV Input
+
+import torch
+import torch.nn as nn
+import pandas as pd
+
+# Read real data from CSV
+df = pd.read_csv("data.csv")
+real_data = torch.tensor(
+    df[["x1", "x2"]].values,
+    dtype=torch.float32
+)
+
+# Generator: noise -> fake data
+G = nn.Sequential(
+    nn.Linear(5, 16),
+    nn.ReLU(),
+    nn.Linear(16, 2),
+    nn.Tanh()
+)
+
+# Discriminator: data -> real/fake probability
+D = nn.Sequential(
+    nn.Linear(2, 16),
+    nn.ReLU(),
+    nn.Linear(16, 1),
+    nn.Sigmoid()
+)
+
+criterion = nn.BCELoss()
+
+opt_G = torch.optim.Adam(G.parameters(), lr=0.001)
+opt_D = torch.optim.Adam(D.parameters(), lr=0.001)
+
+# Training
+for epoch in range(1000):
+
+    # Generate fake data
+    noise = torch.randn(len(real_data), 5)
+    fake_data = G(noise)
+
+    # Train discriminator
+    real_labels = torch.ones(len(real_data), 1)
+    fake_labels = torch.zeros(len(real_data), 1)
+
+    loss_real = criterion(D(real_data), real_labels)
+    loss_fake = criterion(D(fake_data.detach()), fake_labels)
+
+    loss_D = loss_real + loss_fake
+
+    opt_D.zero_grad()
+    loss_D.backward()
+    opt_D.step()
+
+    # Train generator
+    noise = torch.randn(len(real_data), 5)
+    fake_data = G(noise)
+
+    loss_G = criterion(D(fake_data), real_labels)
+
+    opt_G.zero_grad()
+    loss_G.backward()
+    opt_G.step()
+
+    if (epoch + 1) % 200 == 0:
+        print(
+            f"Epoch: {epoch+1}, "
+            f"D Loss: {loss_D.item():.4f}, "
+            f"G Loss: {loss_G.item():.4f}"
+        )
+
+# Generate new samples
+noise = torch.randn(5, 5)
+
+with torch.no_grad():
+    generated = G(noise)
+
+print("\nGenerated samples:")
+print(generated)
+
+# 1. GAN for Handwritten Digit Generation (MNIST)
+
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+# 1. Load real MNIST images
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+dataset = datasets.MNIST(
+    root="./data",
+    train=True,
+    download=True,
+    transform=transform
+)
+
+loader = DataLoader(dataset, batch_size=64, shuffle=True)
+
+# 2. Generator: noise -> image
+G = nn.Sequential(
+    nn.Linear(100, 256),
+    nn.ReLU(),
+    nn.Linear(256, 512),
+    nn.ReLU(),
+    nn.Linear(512, 784),
+    nn.Tanh()
+)
+
+# 3. Discriminator: image -> real/fake
+D = nn.Sequential(
+    nn.Linear(784, 512),
+    nn.LeakyReLU(0.2),
+    nn.Linear(512, 256),
+    nn.LeakyReLU(0.2),
+    nn.Linear(256, 1),
+    nn.Sigmoid()
+)
+
+criterion = nn.BCELoss()
+opt_G = torch.optim.Adam(G.parameters(), lr=0.0002)
+opt_D = torch.optim.Adam(D.parameters(), lr=0.0002)
+
+# 4. Training
+for epoch in range(10):
+    for real, _ in loader:
+
+        batch_size = real.size(0)
+        real = real.view(batch_size, 784)
+
+        ones = torch.ones(batch_size, 1)
+        zeros = torch.zeros(batch_size, 1)
+
+        # Train discriminator
+        noise = torch.randn(batch_size, 100)
+        fake = G(noise)
+
+        loss_D = (
+            criterion(D(real), ones)
+            + criterion(D(fake.detach()), zeros)
+        )
+
+        opt_D.zero_grad()
+        loss_D.backward()
+        opt_D.step()
+
+        # Train generator
+        noise = torch.randn(batch_size, 100)
+        fake = G(noise)
+
+        loss_G = criterion(D(fake), ones)
+
+        opt_G.zero_grad()
+        loss_G.backward()
+        opt_G.step()
+
+    print(
+        f"Epoch {epoch+1}/10 | "
+        f"D Loss: {loss_D.item():.4f} | "
+        f"G Loss: {loss_G.item():.4f}"
+    )
+
+# 5. Generate new digit images
+noise = torch.randn(16, 100)
+
+with torch.no_grad():
+    images = G(noise).reshape(-1, 28, 28)
+
+# Display generated images
+fig, axes = plt.subplots(4, 4, figsize=(6, 6))
+
+for i, ax in enumerate(axes.flat):
+    ax.imshow(images[i], cmap="gray", vmin=-1, vmax=1)
+    ax.axis("off")
+
+plt.tight_layout()
+plt.show()
+
+# 2. GAN for Face Image Generation
+
+G = nn.Sequential(
+    nn.ConvTranspose2d(100, 256, 7, 1, 0),
+    nn.BatchNorm2d(256),
+    nn.ReLU(),
+
+    nn.ConvTranspose2d(256, 128, 4, 2, 1),
+    nn.BatchNorm2d(128),
+    nn.ReLU(),
+
+    nn.ConvTranspose2d(128, 3, 4, 2, 1),
+    nn.Tanh()
+)
+
+# 3. GAN for Synthetic Tabular Data
+
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.preprocessing import MinMaxScaler
+
+# Load real data
+df = pd.read_csv("students.csv")
+
+scaler = MinMaxScaler(feature_range=(-1, 1))
+data = scaler.fit_transform(df)
+
+real_data = torch.tensor(data, dtype=torch.float32)
+
+# Generator
+G = nn.Sequential(
+    nn.Linear(5, 16),
+    nn.ReLU(),
+    nn.Linear(16, 3),
+    nn.Tanh()
+)
+
+# Discriminator
+D = nn.Sequential(
+    nn.Linear(3, 16),
+    nn.LeakyReLU(0.2),
+    nn.Linear(16, 1),
+    nn.Sigmoid()
+)
+
+criterion = nn.BCELoss()
+opt_G = torch.optim.Adam(G.parameters(), lr=0.001)
+opt_D = torch.optim.Adam(D.parameters(), lr=0.001)
+
+# Training
+for epoch in range(1000):
+    n = len(real_data)
+    ones = torch.ones(n, 1)
+    zeros = torch.zeros(n, 1)
+
+    # Train discriminator
+    fake = G(torch.randn(n, 5))
+
+    loss_D = (
+        criterion(D(real_data), ones)
+        + criterion(D(fake.detach()), zeros)
+    )
+
+    opt_D.zero_grad()
+    loss_D.backward()
+    opt_D.step()
+
+    # Train generator
+    fake = G(torch.randn(n, 5))
+    loss_G = criterion(D(fake), ones)
+
+    opt_G.zero_grad()
+    loss_G.backward()
+    opt_G.step()
+
+# Generate synthetic student records
+with torch.no_grad():
+    fake = G(torch.randn(5, 5)).numpy()
+
+generated = scaler.inverse_transform(fake)
+
+print(pd.DataFrame(generated, columns=df.columns))
+
+"""
+Image - RNN 
+"""
+
+# 1. RNN for Handwritten Digit Classification
+
+import torch
+import torch.nn as nn
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+# Load MNIST dataset
+transform = transforms.ToTensor()
+
+train_data = datasets.MNIST(
+    root="./data", train=True, download=True, transform=transform
+)
+test_data = datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
+)
+
+train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=64)
+
+# RNN model
+class RNNModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.rnn = nn.RNN(28, 64, batch_first=True)
+        self.fc = nn.Linear(64, 10)
+
+    def forward(self, x):
+        x = x.squeeze(1)           # (B, 28, 28)
+        out, hidden = self.rnn(x)
+        out = out[:, -1, :]        # Last row's output
+        return self.fc(out)        # 10 digit classes
+
+model = RNNModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Training
+for epoch in range(5):
+    for images, labels in train_loader:
+        pred = model(images)
+        loss = criterion(pred, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+
+# Testing
+correct = total = 0
+
+model.eval()
+with torch.no_grad():
+    for images, labels in test_loader:
+        pred = model(images).argmax(dim=1)
+        correct += (pred == labels).sum().item()
+        total += labels.size(0)
+
+print("Accuracy:", 100 * correct / total, "%")
+
+# 2. LSTM for Handwritten Digit Classification
+
+import torch
+import torch.nn as nn
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+# Load MNIST dataset
+transform = transforms.ToTensor()
+
+train_data = datasets.MNIST(
+    root="./data", train=True, download=True, transform=transform
+)
+test_data = datasets.MNIST(
+    root="./data", train=False, download=True, transform=transform
+)
+
+train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=64)
+
+# LSTM model
+class LSTMModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lstm = nn.LSTM(28, 64, batch_first=True)
+        self.fc = nn.Linear(64, 10)
+
+    def forward(self, x):
+        x = x.squeeze(1)                # (B, 28, 28)
+        out, (hidden, cell) = self.lstm(x)
+        out = out[:, -1, :]             # Last row's output
+        return self.fc(out)             # 10 digit classes
+
+model = LSTMModel()
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Training
+for epoch in range(5):
+    for images, labels in train_loader:
+        pred = model(images)
+        loss = criterion(pred, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+
+# Testing
+correct = total = 0
+
+model.eval()
+with torch.no_grad():
+    for images, labels in test_loader:
+        pred = model(images).argmax(dim=1)
+        correct += (pred == labels).sum().item()
+        total += labels.size(0)
+
+print("Accuracy:", 100 * correct / total, "%")
 
